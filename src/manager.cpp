@@ -193,6 +193,32 @@ void Estimator::ProcessTracks(const timestamp_t &ts,
     DestroyFeatures(bad_features);
   }
 
+  // Drop groups that now have fewer features than can be fixed because features
+  // were dropped by the tracker.
+  // Then, look for new groups to own them.
+  std::vector<GroupPtr> pre_update_discards;
+  for (auto g: affected_groups) {
+    const auto &adj_f = graph.GetFeaturesOf(g);
+    int num_features_instate =
+      std::count_if(adj_f.begin(), adj_f.end(), [g](FeaturePtr f) {
+        return f->ref() == g && f->instate();
+      });
+    if ((num_features_instate < cfg_.get("num_gauge_xy_features", 3).asInt()) ||
+        (num_features_instate == 0)) {
+      pre_update_discards.push_back(g);
+    }
+  }
+  std::vector<FeaturePtr> pre_update_nullrefs =
+    FindNewOwnersForFeaturesOf(pre_update_discards);
+  DiscardFeatures(pre_update_nullrefs);
+  for (auto g: pre_update_discards) {
+    affected_groups.erase(g);
+  }
+  DiscardGroups(pre_update_discards);
+  for (auto nf: pre_update_nullrefs) {
+    LOG(INFO) << "Removed pre-update nullref feature " << nf->id();
+  }
+
   // Once we have enough instate features, perform state update
   if (!instate_features_.empty() || !oos_features_.empty()) {
     MakePtrVectorUnique(oos_features_);
@@ -250,9 +276,12 @@ void Estimator::ProcessTracks(const timestamp_t &ts,
     // floating features (not instate and reference group is floating)
     for (auto g : affected_groups) {
       const auto &adj_f = graph.GetFeaturesOf(g);
-      if (std::none_of(adj_f.begin(), adj_f.end(), [g](FeaturePtr f) {
-            return f->ref() == g && f->instate();
-          })) {
+      int num_features_instate =
+        std::count_if(adj_f.begin(), adj_f.end(), [g](FeaturePtr f) {
+          return f->ref() == g && f->instate();
+        });
+      if ((num_features_instate < cfg_.get("num_gauge_xy_features", 3).asInt()) ||
+          (num_features_instate == 0)) {
         discards.push_back(g);
       }
     }
